@@ -2,12 +2,15 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Telegram Clone - Pro Edition</title>
+    <title>Telegram Clone - Pro</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-        :root { --blue: #2481cc; --bg: #e7ebf0; --yellow: #f4b400; }
+        :root { --blue: #2481cc; --bg: #e7ebf0; --yellow: #f7d54e; }
         body { font-family: sans-serif; margin: 0; background: #f4f4f5; height: 100vh; display: flex; overflow: hidden; }
         
+        /* Заглушка при блокировке уведомлений */
+        #blocked-ui { position: fixed; inset: 0; background: white; z-index: 9999; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px; }
+
         #auth-ui, #prof-ui { position: fixed; inset: 0; background: white; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .card { width: 320px; text-align: center; border: 1px solid #ddd; padding: 25px; border-radius: 15px; box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
         input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #ddd; box-sizing: border-box; }
@@ -25,23 +28,19 @@
 
         .chat-area { display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid #ddd; height: 100vh; overflow: hidden; }
         #msgs { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; }
-        .msg { background: white; padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 75%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); word-wrap: break-word; }
+        .msg { background: white; padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 75%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); word-break: break-word; }
         .msg.my { align-self: flex-end; background: #effdde; }
         .msg-time { font-size: 10px; color: #888; display: block; text-align: right; margin-top: 5px; }
-        
-        /* Медиа в сообщениях */
-        .msg img { max-width: 100%; border-radius: 8px; margin-top: 5px; cursor: pointer; }
-        .msg video { max-width: 100%; border-radius: 8px; }
+        .msg img, .msg video { max-width: 100%; border-radius: 8px; margin-top: 5px; display: block; }
 
-        .input-panel { padding: 15px; background: white; display: flex; gap: 10px; border-top: 1px solid #ddd; align-items: center; }
+        .input-panel { padding: 15px; background: white; display: flex; gap: 8px; border-top: 1px solid #ddd; align-items: center; }
         
-        /* Кнопка скрепки */
-        .attach-btn { width: 50px !important; background: var(--yellow) !important; font-size: 20px; margin: 0 !important; }
+        /* Скрепка */
+        .attach-btn { width: 45px !important; background: var(--yellow) !important; color: #333 !important; font-size: 18px; margin: 0; display: flex; align-items: center; justify-content: center; }
         
-        .voice-btn { width: 50px !important; background: #50a33a !important; font-size: 20px; user-select: none; transition: 0.2s; margin: 0 !important; }
+        .voice-btn { width: 45px !important; background: #50a33a !important; font-size: 20px; user-select: none; transition: 0.2s; margin: 0; }
         .voice-btn.recording { background: #ff4d4d !important; animation: pulse 1s infinite; }
         
-        #mi { flex: 1; } /* Поле ввода растягивается */
         #v-timer { color: #ff4d4d; font-weight: bold; font-size: 14px; display: none; min-width: 30px; }
 
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
@@ -51,6 +50,12 @@
     </style>
 </head>
 <body>
+
+    <div id="blocked-ui">
+        <h1>Доступ ограничен</h1>
+        <p>Для работы приложения необходимо разрешить уведомления в настройках браузера.</p>
+        <button onclick="location.reload()" style="width: 200px">Я разрешил, обновить</button>
+    </div>
 
     <div id="auth-ui">
         <div class="card">
@@ -86,14 +91,13 @@
         <div class="chat-area">
             <div id="msgs"></div>
             <div class="input-panel">
-                <input type="file" id="file-input" style="display:none" onchange="handleFileSelect(this)">
                 <button class="attach-btn" onclick="document.getElementById('file-input').click()">📎</button>
+                <input type="file" id="file-input" style="display:none" onchange="handleFileUpload(this)">
                 
                 <input type="text" id="mi" placeholder="Напишите сообщение..." onkeydown="if(event.key==='Enter') send()">
-                
                 <span id="v-timer">20s</span>
                 <button id="v-btn" class="voice-btn">🎙</button>
-                <button onclick="send()" style="width:60px; margin:0">📤</button>
+                <button onclick="send()" style="width:50px; margin:0">📤</button>
             </div>
         </div>
 
@@ -105,100 +109,120 @@
         let me = null, allUsers = [], currentRoom = null, isReg = false;
         let activeChatters = new Set(JSON.parse(sessionStorage.getItem('tg_active_chats') || "[]"));
 
-        // --- УВЕДОМЛЕНИЯ ---
-        async function checkPerms() {
+        // Инициализация уведомлений
+        async function checkNotifications() {
             if (!("Notification" in window)) return;
-            let perms = await Notification.requestPermission();
-            if (perms !== "granted") {
-                document.body.innerHTML = "<div style='padding:50px; text-align:center'><h1>Доступ запрещен</h1><p>Для работы чата необходимы уведомления. Пожалуйста, разрешите их в настройках браузера и обновите страницу.</p></div>";
+            const permission = await Notification.requestPermission();
+            if (permission === "denied") {
+                document.getElementById('blocked-ui').style.display = 'flex';
+                document.getElementById('auth-ui').style.display = 'none';
             }
         }
-        checkPerms();
 
-        function showPush(m) {
-            if (m.sid === me.username) return; // Не спамим себе
-            const sender = allUsers.find(u => u.username === m.sid);
-            new Notification(m.user, {
-                body: m.text || (m.voice ? "🎤 Голосовое сообщение" : "📁 Файл"),
-                icon: sender ? sender.avatar : ""
+        // Обработка Ctrl+V (Вставка фото)
+        window.addEventListener('paste', e => {
+            const item = e.clipboardData.items[0];
+            if (item && item.type.includes('image')) {
+                const blob = item.getAsFile();
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    sendFileMessage(event.target.result, 'image');
+                };
+                reader.readAsDataURL(blob);
+            }
+        });
+
+        // Обработка выбора файла через скрепку
+        function handleFileUpload(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                let type = 'file';
+                if (file.type.startsWith('image')) type = 'image';
+                else if (file.type.startsWith('video')) type = 'video';
+                sendFileMessage(e.target.result, type, file.name);
+            };
+            reader.readAsDataURL(file);
+            input.value = ''; // очистка
+        }
+
+        function sendFileMessage(base64, type, fileName = "") {
+            if (!currentRoom) return;
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            socket.emit('message', {
+                room: currentRoom,
+                file: base64,
+                fileType: type,
+                fileName: fileName,
+                user: me.nickname,
+                sid: me.username,
+                avatar: me.avatar, // Передаем аватар для уведомлений
+                time
             });
         }
 
-        // --- ФАЙЛЫ И CTRL+V ---
-        document.getElementById('mi').onpaste = (e) => {
-            const item = e.clipboardData.items[0];
-            if (item && item.type.includes('image')) sendFile(item.getAsFile());
-        };
-
-        function handleFileSelect(input) {
-            if (input.files[0]) sendFile(input.files[0]);
-            input.value = '';
-        }
-
-        function sendFile(file) {
-            if (!currentRoom) return alert("Выбери чат!");
-            const r = new FileReader();
-            r.onload = (e) => {
-                const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                socket.emit('message', { 
-                    room: currentRoom, 
-                    file: e.target.result, 
-                    fileType: file.type, 
-                    fileName: file.name,
-                    user: me.nickname, sid: me.username, time 
-                });
-            };
-            r.readAsDataURL(file);
-        }
-
-        // --- ЛОГИКА ГС ---
+        // --- ГС Логика (без изменений) ---
         let mediaRecorder, audioChunks = [], stream = null, recordingTimeout, timerInterval;
-        const vBtn = document.getElementById('v-btn'), vTimer = document.getElementById('v-timer');
+        const vBtn = document.getElementById('v-btn');
+        const vTimer = document.getElementById('v-timer');
 
         async function initMedia() {
             try {
                 stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mediaRecorder = new MediaRecorder(stream);
                 mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
-                mediaRecorder.onstop = () => {
-                    const blob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
-                    if (blob.size < 1000) return;
+                mediaRecorder.onstop = async () => {
+                    stopTimerDisplay();
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
+                    if (audioBlob.size < 1000) return;
                     const reader = new FileReader();
-                    reader.readAsDataURL(blob);
+                    reader.readAsDataURL(audioBlob);
                     reader.onloadend = () => {
+                        const base64Audio = reader.result;
                         const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                        socket.emit('message', { room: currentRoom, voice: reader.result, user: me.nickname, sid: me.username, time });
+                        socket.emit('message', { room: currentRoom, voice: base64Audio, user: me.nickname, sid: me.username, avatar: me.avatar, time });
                     };
                     audioChunks = [];
                 };
                 return true;
-            } catch { alert("Микрофон недоступен"); return false; }
+            } catch (err) { alert("Микрофон недоступен"); return false; }
         }
+
+        function startTimerDisplay() {
+            let timeLeft = 20; vTimer.innerText = timeLeft + "s"; vTimer.style.display = "inline";
+            timerInterval = setInterval(() => { timeLeft--; vTimer.innerText = timeLeft + "s"; if (timeLeft <= 0) stopTimerDisplay(); }, 1000);
+        }
+        function stopTimerDisplay() { clearInterval(timerInterval); vTimer.style.display = "none"; }
 
         vBtn.onmousedown = async () => {
             if (!currentRoom) return;
-            if (!stream && !(await initMedia())) return;
-            vBtn.classList.add('recording');
-            audioChunks = [];
-            mediaRecorder.start();
-            let timeLeft = 20;
-            vTimer.innerText = timeLeft + "s"; vTimer.style.display = "inline";
-            timerInterval = setInterval(() => {
-                timeLeft--; vTimer.innerText = timeLeft + "s";
-                if (timeLeft <= 0) vBtn.onmouseup();
-            }, 1000);
+            if (!stream) { const allowed = await initMedia(); if (!allowed) return; }
+            vBtn.classList.add('recording'); audioChunks = []; mediaRecorder.start(); startTimerDisplay();
+            recordingTimeout = setTimeout(() => { if (mediaRecorder.state === "recording") vBtn.onmouseup(); }, 20000);
         };
+        vBtn.onmouseup = () => { if (mediaRecorder && mediaRecorder.state === "recording") { vBtn.classList.remove('recording'); clearTimeout(recordingTimeout); mediaRecorder.stop(); } };
+        vBtn.onmouseleave = vBtn.onmouseup;
 
-        vBtn.onmouseup = () => {
-            if (mediaRecorder?.state === "recording") {
-                vBtn.classList.remove('recording');
-                clearInterval(timerInterval);
-                vTimer.style.display = "none";
-                mediaRecorder.stop();
+        // --- Основная логика ---
+        const emojis = "😀 😁 😂 🤣 😃 😄 😅 😆 😉 😊 😋 😎 😍 😘 🥰 😗 😙 🥲 😚 ☺️ 🙂 🤗 🤩 🤔 🫡 🤨 😐 😑 😶 🫥 🙄 😏 😣 😥 😮 🤐 😯 😪 😫 🥱 😴 😌 😛 😜 😝 🤤 😒 😓 😔 😕 🫤 🙃 🫠 🤑 😲 ☹️ 🙁 😖 😞 😟 😤 😢 😭 😦 😧 😨 😩 🤯 😬 😰 😱 🥵 🥶 😳 🤪 😵 😵‍💫 🥴 😠 😡 🤬 😇 🥳 🥸 🥺 🥹 🤠 🤡 🤥 🤫 🤭 🫢 🫣 🧐 🤓 😈 👿 👹 👺 💀 ☠️ 👻 👽 👾 🤖 💩".split(/\s+/);
+        const ep = document.getElementById('emoji-list');
+        emojis.forEach(e => {
+            const div = document.createElement('div'); div.className = 'emoji-btn'; div.innerText = e;
+            div.onclick = () => { document.getElementById('mi').value += e + " "; document.getElementById('mi').focus(); };
+            ep.appendChild(div);
+        });
+
+        window.onload = () => {
+            checkNotifications();
+            const saved = sessionStorage.getItem('tg_user');
+            if(saved) {
+                me = JSON.parse(saved);
+                startApp();
+                socket.emit('auth_request', { username: me.username, password: me.password, isRegister: false });
             }
         };
 
-        // --- СИСТЕМНАЯ ЛОГИКА ---
         function swapMode() {
             isReg = !isReg;
             document.getElementById('atitle').innerText = isReg ? 'Регистрация' : 'Вход';
@@ -207,6 +231,7 @@
 
         function doAuth() {
             const u = document.getElementById('au').value, p = document.getElementById('ap').value;
+            if(!u || !p) return alert("Заполни поля!");
             socket.emit('auth_request', { username: u, password: p, isRegister: isReg });
         }
 
@@ -239,17 +264,20 @@
             document.getElementById('auth-ui').style.display = 'none';
             document.getElementById('prof-ui').style.display = 'none';
             document.getElementById('main-ui').style.display = 'grid';
-            updateSidebar();
+            updateSidebar(); 
         }
 
         function updateSidebar() {
+            const query = document.getElementById('user-search').value.toLowerCase().trim();
             const list = document.getElementById('user-list');
             list.innerHTML = '';
             allUsers.forEach(u => {
                 if(me && u.username === me.username) return;
-                if(activeChatters.has(u.username) || document.getElementById('user-search').value) {
+                const isSearching = query !== "" && (u.nickname.toLowerCase().includes(query) || u.sysName.toLowerCase().includes(query));
+                const isChatActive = activeChatters.has(u.username);
+                if(isSearching || isChatActive) {
                     const div = document.createElement('div');
-                    div.className = `user-item ${currentRoom?.includes(u.username) ? 'active-chat' : ''}`;
+                    div.className = `user-item ${isChatActive ? 'active-chat' : ''}`;
                     div.onclick = () => selectChat(u);
                     div.innerHTML = `<img src="${u.avatar || ''}" class="ava"> <div><b>${u.nickname}</b><br><small>@${u.sysName}</small></div>`;
                     list.appendChild(div);
@@ -262,7 +290,7 @@
             currentRoom = ids[0] + "_" + ids[1];
             activeChatters.add(partner.username);
             sessionStorage.setItem('tg_active_chats', JSON.stringify(Array.from(activeChatters)));
-            document.getElementById('msgs').innerHTML = '';
+            document.getElementById('msgs').innerHTML = ''; 
             socket.emit('join_chat', currentRoom);
             updateSidebar();
         }
@@ -271,46 +299,62 @@
             const i = document.getElementById('mi');
             if(!i.value || !currentRoom) return;
             const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            socket.emit('message', { room: currentRoom, text: i.value, user: me.nickname, sid: me.username, time });
+            socket.emit('message', { room: currentRoom, text: i.value, user: me.nickname, sid: me.username, avatar: me.avatar, time });
             i.value = '';
         }
+
+        socket.on('init_data', (d) => { allUsers = d.users || []; updateSidebar(); });
+        socket.on('update_users', (u) => { allUsers = u; updateSidebar(); });
+
+        socket.on('message', (m) => {
+            if(m.room === currentRoom) {
+                renderMsg(m);
+            } else if (m.sid !== me.username) {
+                // Логика уведомления
+                showNotification(m);
+            }
+        });
+
+        function showNotification(m) {
+            if (Notification.permission === "granted") {
+                let bodyText = m.text || "Отправил файл/голосовое";
+                if (m.voice) bodyText = "🎤 Голосовое сообщение";
+                if (m.fileType === 'image') bodyText = "📷 Изображение";
+                
+                new Notification(m.user, {
+                    body: bodyText,
+                    icon: m.avatar || '/default-avatar.png'
+                });
+            }
+        }
+
+        socket.on('chat_history', (h) => { h.forEach(renderMsg); });
 
         function renderMsg(m) {
             const msgsDiv = document.getElementById('msgs');
             const d = document.createElement('div');
             d.className = `msg ${m.sid === me.username ? 'my' : ''}`;
+            
             let content = `<b>${m.user}</b><br>`;
             
-            if (m.voice) content += `<audio controls src="${m.voice}"></audio>`;
-            else if (m.file) {
-                if (m.fileType.includes('image')) content += `<img src="${m.file}" onclick="window.open(this.src)">`;
-                else if (m.fileType.includes('video')) content += `<video controls src="${m.file}"></video>`;
+            if (m.voice) {
+                content += `<audio controls src="${m.voice}" style="width: 200px; height: 35px;"></audio>`;
+            } else if (m.file) {
+                if (m.fileType === 'image') content += `<img src="${m.file}">`;
+                else if (m.fileType === 'video') content += `<video controls src="${m.file}"></video>`;
                 else content += `<a href="${m.file}" download="${m.fileName}">📄 ${m.fileName}</a>`;
-            } else content += m.text;
-
+            } else {
+                content += m.text;
+            }
+            
             content += `<span class="msg-time">${m.time || ''}</span>`;
             d.innerHTML = content;
             msgsDiv.appendChild(d);
             msgsDiv.scrollTop = msgsDiv.scrollHeight;
         }
 
-        socket.on('init_data', (d) => { allUsers = d.users || []; updateSidebar(); });
-        socket.on('update_users', (u) => { allUsers = u; updateSidebar(); });
-        socket.on('message', (m) => { 
-            if(m.room === currentRoom) renderMsg(m); 
-            else showPush(m); 
-        });
-        socket.on('chat_history', (h) => h.forEach(renderMsg));
         function logout() { sessionStorage.clear(); location.reload(); }
-        
-        // Emoji
-        const emojis = "😀 😂 😊 😍 😎 🤔 🤨 😐 😶 🙄 😏 😥 😮 🤐 😴 😛 😒 😔 😕 😲 ☹️ 😖 😢 😭 😩 🤯 😰 😱 🥵 🥶 😳 😵 😠 😡 🤬 😇 🥳 🤡 💩".split(" ");
-        const ep = document.getElementById('emoji-list');
-        emojis.forEach(e => {
-            const div = document.createElement('div'); div.className = 'emoji-btn'; div.innerText = e;
-            div.onclick = () => { document.getElementById('mi').value += e; document.getElementById('mi').focus(); };
-            ep.appendChild(div);
-        });
+        socket.on('auth_error', (e) => alert(e));
     </script>
 </body>
 </html>
