@@ -8,35 +8,32 @@
         :root { --blue: #2481cc; --bg: #e7ebf0; }
         body { font-family: sans-serif; margin: 0; background: #f4f4f5; height: 100vh; display: flex; overflow: hidden; }
         
-        /* Экраны авторизации */
         #auth-ui, #prof-ui { position: fixed; inset: 0; background: white; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .card { width: 320px; text-align: center; border: 1px solid #ddd; padding: 25px; border-radius: 15px; box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
         input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #ddd; box-sizing: border-box; }
-        input#mi { font-family: "Segoe UI Emoji", "Apple Color Emoji", sans-serif; font-size: 16px; }
         button { background: var(--blue); color: white; border: none; cursor: pointer; font-weight: bold; }
 
-        /* Основной интерфейс */
         #main-ui { display: none; width: 100%; height: 100vh; grid-template-columns: 300px 1fr 250px; }
         
-        /* Боковая панель */
-        .sidebar { background: white; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+        .sidebar { background: white; border-right: 1px solid #ddd; display: flex; flex-direction: column; height: 100vh; }
         .sidebar-header { padding: 15px; font-weight: bold; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-        .user-item { padding: 12px; border-bottom: 1px solid #f9f9f9; display: flex; align-items: center; gap: 10px; cursor: pointer; transition: 0.2s; }
+        .user-list-container { flex: 1; overflow-y: auto; }
+        .user-item { padding: 12px; border-bottom: 1px solid #f9f9f9; display: flex; align-items: center; gap: 10px; cursor: pointer; }
         .user-item:hover { background: #f0f7ff; }
         .user-item.active-chat { border-left: 4px solid var(--blue); background: #f8fbff; }
         .ava { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; background: #eee; }
 
-        /* Чат */
-        .chat-area { display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid #ddd; }
+        .chat-area { display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid #ddd; height: 100vh; overflow: hidden; }
         #msgs { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; }
-        .msg { background: white; padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 75%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); position: relative; }
+        .msg { background: white; padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 75%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
         .msg.my { align-self: flex-end; background: #effdde; }
         .msg-time { font-size: 10px; color: #888; display: block; text-align: right; margin-top: 5px; }
 
-        /* Эмодзи */
-        .emoji-panel { background: white; padding: 10px; overflow-y: auto; display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; align-content: start; }
-        .emoji-btn { font-size: 26px; cursor: pointer; padding: 8px; border-radius: 8px; text-align: center; user-select: none; }
-        .emoji-btn:hover { background: #f0f0f0; transform: scale(1.1); }
+        .input-panel { padding: 15px; background: white; display: flex; gap: 10px; border-top: 1px solid #ddd; }
+
+        .emoji-panel { background: white; padding: 10px; overflow-y: auto; display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; height: 100vh; }
+        .emoji-btn { font-size: 26px; cursor: pointer; padding: 8px; border-radius: 8px; text-align: center; }
+        .emoji-btn:hover { background: #f0f0f0; }
     </style>
 </head>
 <body>
@@ -69,13 +66,13 @@
                 <button onclick="logout()" style="width:auto; margin:0; padding:4px 8px; background:#ff4d4d; font-size:11px">Выйти</button>
             </div>
             <input type="text" id="user-search" placeholder="Поиск людей..." style="margin:10px; width:calc(100% - 20px)">
-            <div id="user-list"></div>
+            <div id="user-list" class="user-list-container"></div>
         </div>
 
         <div class="chat-area">
             <div id="msgs"></div>
-            <div style="padding:15px; background:white; display:flex; gap:10px;">
-                <input type="text" id="mi" placeholder="Напишите сообщение...">
+            <div class="input-panel">
+                <input type="text" id="mi" placeholder="Напишите сообщение..." onkeydown="if(event.key==='Enter') send()">
                 <button onclick="send()" style="width:60px; margin:0">📤</button>
             </div>
         </div>
@@ -88,14 +85,13 @@
         let me = null, isReg = false, base64Ava = "", tempPass = "";
         let allUsers = [], currentRoom = null;
 
-        // ЗАГРУЖАЕМ ЧАТЫ ИЗ ПАМЯТИ СРАЗУ (чтобы не пропадали при обновлении)
-        let activeChatters = new Set(JSON.parse(localStorage.getItem('tg_active_chats') || "[]"));
+        // Используем sessionStorage для независимых вкладок
+        let activeChatters = new Set(JSON.parse(sessionStorage.getItem('tg_active_chats') || "[]"));
 
         const emojis = "😀 😁 😂 🤣 😃 😄 😅 😆 😉 😊 😋 😎 😍 😘 🥰 😗 😙 🥲 😚 ☺️ 🙂 🤗 🤩 🤔 🫡 🤨 😐 😑 😶 🫥 🙄 😏 😣 😥 😮 🤐 😯 😪 😫 🥱 😴 😌 😛 😜 😝 🤤 😒 😓 😔 😕 🫤 🙃 🫠 🤑 😲 ☹️ 🙁 😖 😞 😟 😤 😢 😭 😦 😧 😨 😩 🤯 😬 😰 😱 🥵 🥶 😳 🤪 😵 😵‍💫 🥴 😠 😡 🤬 😇 🥳 🥸 🥺 🥹 🤠 🤡 🤥 🤫 🤭 🫢 🫣 🧐 🤓 😈 👿 👹 👺 💀 ☠️ 👻 👽 👾 🤖 💩".split(/\s+/);
 
-        // Сохранение списка чатов в браузер
         function saveToDisk() {
-            localStorage.setItem('tg_active_chats', JSON.stringify(Array.from(activeChatters)));
+            sessionStorage.setItem('tg_active_chats', JSON.stringify(Array.from(activeChatters)));
         }
 
         const ep = document.getElementById('emoji-list');
@@ -103,12 +99,16 @@
             const div = document.createElement('div');
             div.className = 'emoji-btn';
             div.innerText = e;
-            div.onclick = () => { document.getElementById('mi').value += e + " "; document.getElementById('mi').focus(); };
+            div.onclick = () => { 
+                const mi = document.getElementById('mi');
+                mi.value += e + " "; 
+                mi.focus(); 
+            };
             ep.appendChild(div);
         });
 
         window.onload = () => {
-            const saved = localStorage.getItem('tg_user');
+            const saved = sessionStorage.getItem('tg_user');
             if(saved) {
                 me = JSON.parse(saved);
                 startApp();
@@ -136,7 +136,7 @@
                 document.getElementById('prof-ui').style.display = 'flex';
             } else {
                 me = res.user;
-                localStorage.setItem('tg_user', JSON.stringify(me));
+                sessionStorage.setItem('tg_user', JSON.stringify(me));
                 startApp();
             }
         });
@@ -154,7 +154,7 @@
             socket.emit('save_profile', me);
         }
 
-        socket.on('profile_ready', (u) => { me = u; localStorage.setItem('tg_user', JSON.stringify(me)); startApp(); });
+        socket.on('profile_ready', (u) => { me = u; sessionStorage.setItem('tg_user', JSON.stringify(me)); startApp(); });
 
         function startApp() {
             document.getElementById('auth-ui').style.display = 'none';
@@ -187,10 +187,8 @@
         function selectChat(partner) {
             const ids = [me.username, partner.username].sort();
             currentRoom = ids[0] + "_" + ids[1];
-            
-            activeChatters.add(partner.username); // Добавляем в список при клике
-            saveToDisk(); // Сохраняем в память браузера
-
+            activeChatters.add(partner.username);
+            saveToDisk();
             document.getElementById('msgs').innerHTML = ''; 
             socket.emit('join_chat', currentRoom);
             updateSidebar();
@@ -201,8 +199,6 @@
         socket.on('init_data', (d) => {
             if (!d) return;
             allUsers = d.users || [];
-            
-            // Проверяем историю сообщений, чтобы восстановить чаты
             if (d.messages && Array.isArray(d.messages) && me) {
                 d.messages.forEach(m => {
                     const parts = m.room.split('_');
@@ -233,7 +229,7 @@
                 const other = parts.find(id => id !== me.username);
                 if(other) {
                     activeChatters.add(other);
-                    saveToDisk(); // Сохраняем, если пришло новое сообщение
+                    saveToDisk();
                     updateSidebar();
                 }
             }
@@ -243,17 +239,15 @@
         socket.on('chat_history', (h) => { h.forEach(renderMsg); });
 
         function renderMsg(m) {
+            const msgsDiv = document.getElementById('msgs');
             const d = document.createElement('div');
             d.className = `msg ${m.sid === me.username ? 'my' : ''}`;
             d.innerHTML = `<b>${m.user}</b><br>${m.text}<span class="msg-time">${m.time || ''}</span>`;
-            document.getElementById('msgs').appendChild(d);
-            document.getElementById('msgs').scrollTop = 99999;
+            msgsDiv.appendChild(d);
+            msgsDiv.scrollTop = msgsDiv.scrollHeight;
         }
 
-        function logout() { 
-            localStorage.clear(); 
-            location.reload(); 
-        }
+        function logout() { sessionStorage.clear(); location.reload(); }
         socket.on('auth_error', (e) => alert(e));
     </script>
 </body>
