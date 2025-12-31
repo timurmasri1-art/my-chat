@@ -5,38 +5,180 @@
     <title>Telegram Clone - Final</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-        :root { --blue: #2481cc; --bg: #e7ebf0; }
-        body { font-family: sans-serif; margin: 0; background: #f4f4f5; height: 100vh; display: flex; overflow: hidden; }
-        
-        /* Экраны авторизации */
-        #auth-ui, #prof-ui { position: fixed; inset: 0; background: white; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-        .card { width: 320px; text-align: center; border: 1px solid #ddd; padding: 25px; border-radius: 15px; box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
-        input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #ddd; box-sizing: border-box; }
-        input#mi { font-family: "Segoe UI Emoji", "Apple Color Emoji", sans-serif; font-size: 16px; }
-        button { background: var(--blue); color: white; border: none; cursor: pointer; font-weight: bold; }
+       const socket = io();
+        let me = null, isReg = false, base64Ava = "", tempPass = "";
+        let allUsers = [], currentRoom = null;
 
-        /* Основной интерфейс */
-        #main-ui { display: none; width: 100%; height: 100vh; grid-template-columns: 300px 1fr 250px; }
-        
-        /* Боковая панель */
-        .sidebar { background: white; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
-        .sidebar-header { padding: 15px; font-weight: bold; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-        .user-item { padding: 12px; border-bottom: 1px solid #f9f9f9; display: flex; align-items: center; gap: 10px; cursor: pointer; transition: 0.2s; }
-        .user-item:hover { background: #f0f7ff; }
-        .user-item.active-chat { border-left: 4px solid var(--blue); background: #f8fbff; }
-        .ava { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; background: #eee; }
+        // ИСПОЛЬЗУЕМ sessionStorage ВМЕСТО localStorage ДЛЯ РАЗДЕЛЕНИЯ ВКЛАДОК
+        let activeChatters = new Set(JSON.parse(sessionStorage.getItem('tg_active_chats') || "[]"));
 
-        /* Чат */
-        .chat-area { display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid #ddd; }
-        #msgs { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; }
-        .msg { background: white; padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 75%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); position: relative; }
-        .msg.my { align-self: flex-end; background: #effdde; }
-        .msg-time { font-size: 10px; color: #888; display: block; text-align: right; margin-top: 5px; }
+        const emojis = "😀 😁 😂 🤣 😃 😄 😅 😆 😉 😊 😋 😎 😍 😘 🥰 😗 😙 🥲 😚 ☺️ 🙂 🤗 🤩 🤔 🫡 🤨 😐 😑 😶 🫥 🙄 😏 😣 😥 😮 🤐 😯 😪 😫 🥱 😴 😌 😛 😜 😝 🤤 😒 😓 😔 😕 🫤 🙃 🫠 🤑 😲 ☹️ 🙁 😖 😞 😟 😤 😢 😭 😦 😧 😨 😩 🤯 😬 😰 😱 🥵 🥶 😳 🤪 😵 😵‍💫 🥴 😠 😡 🤬 😇 🥳 🥸 🥺 🥹 🤠 🤡 🤥 🤫 🤭 🫢 🫣 🧐 🤓 😈 👿 👹 👺 💀 ☠️ 👻 👽 👾 🤖 💩".split(/\s+/);
 
-        /* Эмодзи */
-        .emoji-panel { background: white; padding: 10px; overflow-y: auto; display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; align-content: start; }
-        .emoji-btn { font-size: 26px; cursor: pointer; padding: 8px; border-radius: 8px; text-align: center; user-select: none; }
-        .emoji-btn:hover { background: #f0f0f0; transform: scale(1.1); }
+        function saveToDisk() {
+            sessionStorage.setItem('tg_active_chats', JSON.stringify(Array.from(activeChatters)));
+        }
+
+        const ep = document.getElementById('emoji-list');
+        emojis.forEach(e => {
+            const div = document.createElement('div');
+            div.className = 'emoji-btn';
+            div.innerText = e;
+            div.onclick = () => { document.getElementById('mi').value += e + " "; document.getElementById('mi').focus(); };
+            ep.appendChild(div);
+        });
+
+        window.onload = () => {
+            // Загружаем юзера тоже из сессии
+            const saved = sessionStorage.getItem('tg_user');
+            if(saved) {
+                me = JSON.parse(saved);
+                startApp();
+                socket.emit('auth_request', { username: me.username, password: me.password, isRegister: false });
+            }
+        };
+
+        function swapMode() {
+            isReg = !isReg;
+            document.getElementById('atitle').innerText = isReg ? 'Регистрация' : 'Вход';
+            document.getElementById('ap2').style.display = isReg ? 'block' : 'none';
+        }
+
+        function doAuth() {
+            const u = document.getElementById('au').value, p = document.getElementById('ap').value;
+            if(!u || !p) return alert("Заполни поля!");
+            tempPass = p;
+            socket.emit('auth_request', { username: u, password: p, isRegister: isReg });
+        }
+
+        socket.on('auth_success', (res) => {
+            if(res.needProfile) {
+                me = { username: res.username, password: tempPass };
+                document.getElementById('auth-ui').style.display = 'none';
+                document.getElementById('prof-ui').style.display = 'flex';
+            } else {
+                me = res.user;
+                sessionStorage.setItem('tg_user', JSON.stringify(me));
+                startApp();
+            }
+        });
+
+        document.getElementById('p_ava').onchange = (e) => {
+            const r = new FileReader();
+            r.onload = () => base64Ava = r.result;
+            r.readAsDataURL(e.target.files[0]);
+        };
+
+        function doProf() {
+            me.nickname = document.getElementById('p_nick').value;
+            me.sysName = document.getElementById('p_sys').value;
+            me.avatar = base64Ava;
+            socket.emit('save_profile', me);
+        }
+
+        socket.on('profile_ready', (u) => { 
+            me = u; 
+            sessionStorage.setItem('tg_user', JSON.stringify(me)); 
+            startApp(); 
+        });
+
+        function startApp() {
+            document.getElementById('auth-ui').style.display = 'none';
+            document.getElementById('prof-ui').style.display = 'none';
+            document.getElementById('main-ui').style.display = 'grid';
+            updateSidebar(); 
+        }
+
+        function updateSidebar() {
+            const query = document.getElementById('user-search').value.toLowerCase().trim();
+            const list = document.getElementById('user-list');
+            list.innerHTML = '';
+            if(!me) return;
+
+            allUsers.forEach(u => {
+                if(u.username === me.username) return;
+                const isSearching = query !== "" && (u.nickname.toLowerCase().includes(query) || u.sysName.toLowerCase().includes(query));
+                const isChatActive = activeChatters.has(u.username);
+
+                if(isSearching || isChatActive) {
+                    const div = document.createElement('div');
+                    div.className = `user-item ${isChatActive ? 'active-chat' : ''}`;
+                    div.onclick = () => selectChat(u);
+                    div.innerHTML = `<img src="${u.avatar || ''}" class="ava"> <div><b>${u.nickname}</b><br><small>${isChatActive ? '💬 Активный чат' : '@'+u.sysName}</small></div>`;
+                    list.appendChild(div);
+                }
+            });
+        }
+
+        function selectChat(partner) {
+            const ids = [me.username, partner.username].sort();
+            currentRoom = ids[0] + "_" + ids[1];
+            
+            activeChatters.add(partner.username);
+            saveToDisk();
+
+            document.getElementById('msgs').innerHTML = ''; 
+            socket.emit('join_chat', currentRoom);
+            updateSidebar();
+        }
+
+        document.getElementById('user-search').oninput = updateSidebar;
+
+        socket.on('init_data', (d) => {
+            if (!d) return;
+            allUsers = d.users || [];
+            
+            if (d.messages && Array.isArray(d.messages) && me) {
+                d.messages.forEach(m => {
+                    const parts = m.room.split('_');
+                    if (parts.includes(me.username)) {
+                        const other = parts.find(id => id !== me.username);
+                        if (other) activeChatters.add(other);
+                    }
+                });
+                saveToDisk();
+            }
+            updateSidebar();
+        });
+
+        socket.on('update_users', (u) => { allUsers = u; updateSidebar(); });
+
+        function send() {
+            const i = document.getElementById('mi');
+            if(!i.value || !currentRoom) return;
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            socket.emit('message', { room: currentRoom, text: i.value, user: me.nickname, sid: me.username, time });
+            i.value = '';
+        }
+
+        socket.on('message', (m) => {
+            if(!me) return;
+            const parts = m.room.split('_');
+            if(parts.includes(me.username)) {
+                const other = parts.find(id => id !== me.username);
+                if(other) {
+                    activeChatters.add(other);
+                    saveToDisk();
+                    updateSidebar();
+                }
+            }
+            if(m.room === currentRoom) renderMsg(m);
+        });
+
+        socket.on('chat_history', (h) => { h.forEach(renderMsg); });
+
+        function renderMsg(m) {
+            const d = document.createElement('div');
+            d.className = `msg ${m.sid === me.username ? 'my' : ''}`;
+            d.innerHTML = `<b>${m.user}</b><br>${m.text}<span class="msg-time">${m.time || ''}</span>`;
+            document.getElementById('msgs').appendChild(d);
+            document.getElementById('msgs').scrollTop = 99999;
+        }
+
+        function logout() { 
+            sessionStorage.clear(); // Очищаем только текущую вкладку
+            location.reload(); 
+        }
+        socket.on('auth_error', (e) => alert(e));
     </style>
 </head>
 <body>
@@ -257,4 +399,5 @@
         socket.on('auth_error', (e) => alert(e));
     </script>
 </body>
+
 </html>
