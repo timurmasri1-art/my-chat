@@ -2,43 +2,10 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Telegram Clone - Voice Messages</title>
+    <title>Telegram Clone - Pro Edition</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-       /* ... старые стили ... */
-
-    /* Стиль для кнопки скрепки */
-    .attach-btn {
-        width: 50px !important;
-        background: #f4b400 !important; /* Желтый фон */
-        font-size: 20px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    /* Изменение структуры input-panel для вместимости */
-    .input-panel {
-        padding: 10px;
-        background: white;
-        display: flex;
-        gap: 8px;
-        border-top: 1px solid #ddd;
-        align-items: center;
-    }
-
-    .input-panel input[type="text"] {
-        flex: 1; /* Поле ввода теперь занимает все свободное место */
-    }
-
-    /* Стили для медиа в сообщениях */
-    .msg img, .msg video {
-        max-width: 100%;
-        border-radius: 8px;
-        margin-top: 5px;
-    }
-        :root { --blue: #2481cc; --bg: #e7ebf0; }
+        :root { --blue: #2481cc; --bg: #e7ebf0; --yellow: #f4b400; }
         body { font-family: sans-serif; margin: 0; background: #f4f4f5; height: 100vh; display: flex; overflow: hidden; }
         
         #auth-ui, #prof-ui { position: fixed; inset: 0; background: white; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; }
@@ -58,14 +25,23 @@
 
         .chat-area { display: flex; flex-direction: column; background: var(--bg); border-right: 1px solid #ddd; height: 100vh; overflow: hidden; }
         #msgs { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; }
-        .msg { background: white; padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 75%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .msg { background: white; padding: 10px 15px; border-radius: 12px; margin-bottom: 8px; max-width: 75%; box-shadow: 0 1px 2px rgba(0,0,0,0.1); word-wrap: break-word; }
         .msg.my { align-self: flex-end; background: #effdde; }
         .msg-time { font-size: 10px; color: #888; display: block; text-align: right; margin-top: 5px; }
+        
+        /* Медиа в сообщениях */
+        .msg img { max-width: 100%; border-radius: 8px; margin-top: 5px; cursor: pointer; }
+        .msg video { max-width: 100%; border-radius: 8px; }
 
         .input-panel { padding: 15px; background: white; display: flex; gap: 10px; border-top: 1px solid #ddd; align-items: center; }
-        .voice-btn { width: 50px !important; background: #50a33a !important; font-size: 20px; user-select: none; transition: 0.2s; }
+        
+        /* Кнопка скрепки */
+        .attach-btn { width: 50px !important; background: var(--yellow) !important; font-size: 20px; margin: 0 !important; }
+        
+        .voice-btn { width: 50px !important; background: #50a33a !important; font-size: 20px; user-select: none; transition: 0.2s; margin: 0 !important; }
         .voice-btn.recording { background: #ff4d4d !important; animation: pulse 1s infinite; }
         
+        #mi { flex: 1; } /* Поле ввода растягивается */
         #v-timer { color: #ff4d4d; font-weight: bold; font-size: 14px; display: none; min-width: 30px; }
 
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
@@ -110,7 +86,11 @@
         <div class="chat-area">
             <div id="msgs"></div>
             <div class="input-panel">
+                <input type="file" id="file-input" style="display:none" onchange="handleFileSelect(this)">
+                <button class="attach-btn" onclick="document.getElementById('file-input').click()">📎</button>
+                
                 <input type="text" id="mi" placeholder="Напишите сообщение..." onkeydown="if(event.key==='Enter') send()">
+                
                 <span id="v-timer">20s</span>
                 <button id="v-btn" class="voice-btn">🎙</button>
                 <button onclick="send()" style="width:60px; margin:0">📤</button>
@@ -122,124 +102,103 @@
 
     <script>
         const socket = io();
-        let me = null, allUsers = [], currentRoom = null;
+        let me = null, allUsers = [], currentRoom = null, isReg = false;
         let activeChatters = new Set(JSON.parse(sessionStorage.getItem('tg_active_chats') || "[]"));
 
-        // Переменные для ГС
-        let mediaRecorder;
-        let audioChunks = [];
-        let stream = null;
-        let recordingTimeout; 
-        let timerInterval;
+        // --- УВЕДОМЛЕНИЯ ---
+        async function checkPerms() {
+            if (!("Notification" in window)) return;
+            let perms = await Notification.requestPermission();
+            if (perms !== "granted") {
+                document.body.innerHTML = "<div style='padding:50px; text-align:center'><h1>Доступ запрещен</h1><p>Для работы чата необходимы уведомления. Пожалуйста, разрешите их в настройках браузера и обновите страницу.</p></div>";
+            }
+        }
+        checkPerms();
 
-        const emojis = "😀 😁 😂 🤣 😃 😄 😅 😆 😉 😊 😋 😎 😍 😘 🥰 😗 😙 🥲 😚 ☺️ 🙂 🤗 🤩 🤔 🫡 🤨 😐 😑 😶 🫥 🙄 😏 😣 😥 😮 🤐 😯 😪 😫 🥱 😴 😌 😛 😜 😝 🤤 😒 😓 😔 😕 🫤 🙃 🫠 🤑 😲 ☹️ 🙁 😖 😞 😟 😤 😢 😭 😦 😧 😨 😩 🤯 😬 😰 😱 🥵 🥶 😳 🤪 😵 😵‍💫 🥴 😠 😡 🤬 😇 🥳 🥸 🥺 🥹 🤠 🤡 🤥 🤫 🤭 🫢 🫣 🧐 🤓 😈 👿 👹 👺 💀 ☠️ 👻 👽 👾 🤖 💩".split(/\s+/);
+        function showPush(m) {
+            if (m.sid === me.username) return; // Не спамим себе
+            const sender = allUsers.find(u => u.username === m.sid);
+            new Notification(m.user, {
+                body: m.text || (m.voice ? "🎤 Голосовое сообщение" : "📁 Файл"),
+                icon: sender ? sender.avatar : ""
+            });
+        }
 
-        const vBtn = document.getElementById('v-btn');
-        const vTimer = document.getElementById('v-timer');
+        // --- ФАЙЛЫ И CTRL+V ---
+        document.getElementById('mi').onpaste = (e) => {
+            const item = e.clipboardData.items[0];
+            if (item && item.type.includes('image')) sendFile(item.getAsFile());
+        };
 
-        // --- ЛОГИКА ГОЛОСОВЫХ ---
+        function handleFileSelect(input) {
+            if (input.files[0]) sendFile(input.files[0]);
+            input.value = '';
+        }
+
+        function sendFile(file) {
+            if (!currentRoom) return alert("Выбери чат!");
+            const r = new FileReader();
+            r.onload = (e) => {
+                const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                socket.emit('message', { 
+                    room: currentRoom, 
+                    file: e.target.result, 
+                    fileType: file.type, 
+                    fileName: file.name,
+                    user: me.nickname, sid: me.username, time 
+                });
+            };
+            r.readAsDataURL(file);
+        }
+
+        // --- ЛОГИКА ГС ---
+        let mediaRecorder, audioChunks = [], stream = null, recordingTimeout, timerInterval;
+        const vBtn = document.getElementById('v-btn'), vTimer = document.getElementById('v-timer');
+
         async function initMedia() {
             try {
                 stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 mediaRecorder = new MediaRecorder(stream);
-                
                 mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
-                
-                mediaRecorder.onstop = async () => {
-                    stopTimerDisplay();
-                    const audioBlob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
-                    if (audioBlob.size < 1000) return; // Не отправляем слишком короткие
-
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
+                    if (blob.size < 1000) return;
                     const reader = new FileReader();
-                    reader.readAsDataURL(audioBlob);
+                    reader.readAsDataURL(blob);
                     reader.onloadend = () => {
-                        const base64Audio = reader.result;
                         const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                        socket.emit('message', { 
-                            room: currentRoom, 
-                            voice: base64Audio, 
-                            user: me.nickname, 
-                            sid: me.username, 
-                            time 
-                        });
+                        socket.emit('message', { room: currentRoom, voice: reader.result, user: me.nickname, sid: me.username, time });
                     };
                     audioChunks = [];
                 };
                 return true;
-            } catch (err) {
-                alert("Микрофон заблокирован или недоступен");
-                return false;
-            }
+            } catch { alert("Микрофон недоступен"); return false; }
         }
 
-        function startTimerDisplay() {
-            let timeLeft = 20;
-            vTimer.innerText = timeLeft + "s";
-            vTimer.style.display = "inline";
-            timerInterval = setInterval(() => {
-                timeLeft--;
-                vTimer.innerText = timeLeft + "s";
-                if (timeLeft <= 0) stopTimerDisplay();
-            }, 1000);
-        }
-
-        function stopTimerDisplay() {
-            clearInterval(timerInterval);
-            vTimer.style.display = "none";
-        }
-
-        vBtn.onmousedown = async (e) => {
+        vBtn.onmousedown = async () => {
             if (!currentRoom) return;
-            if (!stream) {
-                const allowed = await initMedia();
-                if (!allowed) return;
-            }
-            if (mediaRecorder && mediaRecorder.state === "inactive") {
-                vBtn.classList.add('recording');
-                audioChunks = [];
-                mediaRecorder.start();
-                startTimerDisplay();
-
-                // Авто-стоп через 20 секунд
-                recordingTimeout = setTimeout(() => {
-                    if (mediaRecorder.state === "recording") vBtn.onmouseup();
-                }, 20000);
-            }
+            if (!stream && !(await initMedia())) return;
+            vBtn.classList.add('recording');
+            audioChunks = [];
+            mediaRecorder.start();
+            let timeLeft = 20;
+            vTimer.innerText = timeLeft + "s"; vTimer.style.display = "inline";
+            timerInterval = setInterval(() => {
+                timeLeft--; vTimer.innerText = timeLeft + "s";
+                if (timeLeft <= 0) vBtn.onmouseup();
+            }, 1000);
         };
 
         vBtn.onmouseup = () => {
-            if (mediaRecorder && mediaRecorder.state === "recording") {
+            if (mediaRecorder?.state === "recording") {
                 vBtn.classList.remove('recording');
-                clearTimeout(recordingTimeout);
+                clearInterval(timerInterval);
+                vTimer.style.display = "none";
                 mediaRecorder.stop();
             }
         };
 
-        vBtn.onmouseleave = vBtn.onmouseup;
-
-        // --- ОСТАЛЬНАЯ ЛОГИКА ---
-        function saveToDisk() {
-            sessionStorage.setItem('tg_active_chats', JSON.stringify(Array.from(activeChatters)));
-        }
-
-        const ep = document.getElementById('emoji-list');
-        emojis.forEach(e => {
-            const div = document.createElement('div');
-            div.className = 'emoji-btn';
-            div.innerText = e;
-            div.onclick = () => { document.getElementById('mi').value += e + " "; document.getElementById('mi').focus(); };
-            ep.appendChild(div);
-        });
-
-        window.onload = () => {
-            const saved = sessionStorage.getItem('tg_user');
-            if(saved) {
-                me = JSON.parse(saved);
-                startApp();
-                socket.emit('auth_request', { username: me.username, password: me.password, isRegister: false });
-            }
-        };
-
+        // --- СИСТЕМНАЯ ЛОГИКА ---
         function swapMode() {
             isReg = !isReg;
             document.getElementById('atitle').innerText = isReg ? 'Регистрация' : 'Вход';
@@ -248,7 +207,6 @@
 
         function doAuth() {
             const u = document.getElementById('au').value, p = document.getElementById('ap').value;
-            if(!u || !p) return alert("Заполни поля!");
             socket.emit('auth_request', { username: u, password: p, isRegister: isReg });
         }
 
@@ -281,20 +239,17 @@
             document.getElementById('auth-ui').style.display = 'none';
             document.getElementById('prof-ui').style.display = 'none';
             document.getElementById('main-ui').style.display = 'grid';
-            updateSidebar(); 
+            updateSidebar();
         }
 
         function updateSidebar() {
-            const query = document.getElementById('user-search').value.toLowerCase().trim();
             const list = document.getElementById('user-list');
             list.innerHTML = '';
             allUsers.forEach(u => {
                 if(me && u.username === me.username) return;
-                const isSearching = query !== "" && (u.nickname.toLowerCase().includes(query) || u.sysName.toLowerCase().includes(query));
-                const isChatActive = activeChatters.has(u.username);
-                if(isSearching || isChatActive) {
+                if(activeChatters.has(u.username) || document.getElementById('user-search').value) {
                     const div = document.createElement('div');
-                    div.className = `user-item ${isChatActive ? 'active-chat' : ''}`;
+                    div.className = `user-item ${currentRoom?.includes(u.username) ? 'active-chat' : ''}`;
                     div.onclick = () => selectChat(u);
                     div.innerHTML = `<img src="${u.avatar || ''}" class="ava"> <div><b>${u.nickname}</b><br><small>@${u.sysName}</small></div>`;
                     list.appendChild(div);
@@ -306,8 +261,8 @@
             const ids = [me.username, partner.username].sort();
             currentRoom = ids[0] + "_" + ids[1];
             activeChatters.add(partner.username);
-            saveToDisk();
-            document.getElementById('msgs').innerHTML = ''; 
+            sessionStorage.setItem('tg_active_chats', JSON.stringify(Array.from(activeChatters)));
+            document.getElementById('msgs').innerHTML = '';
             socket.emit('join_chat', currentRoom);
             updateSidebar();
         }
@@ -320,147 +275,42 @@
             i.value = '';
         }
 
-        socket.on('init_data', (d) => { allUsers = d.users || []; updateSidebar(); });
-        socket.on('update_users', (u) => { allUsers = u; updateSidebar(); });
-
-        socket.on('message', (m) => {
-            if(m.room === currentRoom) renderMsg(m);
-        });
-
-        socket.on('chat_history', (h) => { h.forEach(renderMsg); });
-
         function renderMsg(m) {
             const msgsDiv = document.getElementById('msgs');
             const d = document.createElement('div');
             d.className = `msg ${m.sid === me.username ? 'my' : ''}`;
-            
             let content = `<b>${m.user}</b><br>`;
-            if (m.voice) {
-                content += `<audio controls src="${m.voice}" style="width: 200px; height: 35px;"></audio>`;
-            } else {
-                content += m.text;
-            }
-            content += `<span class="msg-time">${m.time || ''}</span>`;
             
+            if (m.voice) content += `<audio controls src="${m.voice}"></audio>`;
+            else if (m.file) {
+                if (m.fileType.includes('image')) content += `<img src="${m.file}" onclick="window.open(this.src)">`;
+                else if (m.fileType.includes('video')) content += `<video controls src="${m.file}"></video>`;
+                else content += `<a href="${m.file}" download="${m.fileName}">📄 ${m.fileName}</a>`;
+            } else content += m.text;
+
+            content += `<span class="msg-time">${m.time || ''}</span>`;
             d.innerHTML = content;
             msgsDiv.appendChild(d);
             msgsDiv.scrollTop = msgsDiv.scrollHeight;
         }
 
-        function logout() { sessionStorage.clear(); location.reload(); }
-        socket.on('auth_error', (e) => alert(e));
-        // --- ИНИЦИАЛИЗАЦИЯ УВЕДОМЛЕНИЙ ---
-    async function initNotifications() {
-        if (!("Notification" in window)) {
-            alert("Ваш браузер не поддерживает уведомления");
-            return;
-        }
-
-        let permission = await Notification.requestPermission();
-        if (permission !== "granted") {
-            document.body.innerHTML = "<h1 style='text-align:center; margin-top:100px;'>Доступ запрещен. Для работы чата разрешите уведомления и перезагрузите страницу.</h1>";
-            throw new Error("Permission denied");
-        }
-    }
-
-    // --- ОБРАБОТКА ФАЙЛОВ И CTRL+V ---
-    const messageInput = document.getElementById('mi');
-
-    messageInput.onpaste = (event) => {
-        const items = (event.clipboardData || event.originalEvent.clipboardData).items;
-        for (let item of items) {
-            if (item.kind === 'file') {
-                const blob = item.getAsFile();
-                sendFile(blob);
-            }
-        }
-    };
-
-    function handleFileUpload(input) {
-        if (input.files && input.files[0]) {
-            sendFile(input.files[0]);
-            input.value = ''; // сброс для повторной загрузки того же файла
-        }
-    }
-
-    function sendFile(file) {
-        if (!currentRoom) return alert("Сначала выберите чат");
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            const fileData = {
-                room: currentRoom,
-                file: e.target.result,
-                fileName: file.name,
-                fileType: file.type,
-                user: me.nickname,
-                sid: me.username,
-                time
-            };
-            socket.emit('message', fileData);
-        };
-        reader.readAsDataURL(file);
-    }
-
-    // --- МОДИФИЦИРОВАННЫЙ RENDER И MESSAGE ---
-    socket.on('message', (m) => {
-        if (m.room === currentRoom) {
-            renderMsg(m);
-        } else {
-            // Если сообщение пришло в другой чат - показываем уведомление
-            showPushNotification(m);
-        }
-    });
-
-    function showPushNotification(m) {
-        // Находим отправителя в списке всех пользователей для аватарки
-        const sender = allUsers.find(u => u.username === m.sid);
-        const icon = sender ? sender.avatar : '/default-avatar.png';
-        
-        let bodyText = m.text || "Отправил файл/голосовое сообщение";
-        if (m.voice) bodyText = "🎤 Голосовое сообщение";
-        if (m.file) bodyText = "📁 Файл: " + (m.fileName || "без названия");
-
-        const notification = new Notification(m.user, {
-            body: bodyText,
-            icon: icon
+        socket.on('init_data', (d) => { allUsers = d.users || []; updateSidebar(); });
+        socket.on('update_users', (u) => { allUsers = u; updateSidebar(); });
+        socket.on('message', (m) => { 
+            if(m.room === currentRoom) renderMsg(m); 
+            else showPush(m); 
         });
-
-        notification.onclick = () => {
-            window.focus();
-            if (sender) selectChat(sender);
-        };
-    }
-
-    function renderMsg(m) {
-        const msgsDiv = document.getElementById('msgs');
-        const d = document.createElement('div');
-        d.className = `msg ${m.sid === me.username ? 'my' : ''}`;
+        socket.on('chat_history', (h) => h.forEach(renderMsg));
+        function logout() { sessionStorage.clear(); location.reload(); }
         
-        let content = `<b>${m.user}</b><br>`;
-        
-        if (m.voice) {
-            content += `<audio controls src="${m.voice}" style="width: 200px; height: 35px;"></audio>`;
-        } else if (m.file) {
-            if (m.fileType.startsWith('image/')) {
-                content += `<img src="${m.file}" onclick="window.open(this.src)">`;
-            } else if (m.fileType.startsWith('video/')) {
-                content += `<video controls src="${m.file}"></video>`;
-            } else {
-                content += `<a href="${m.file}" download="${m.fileName}">📄 ${m.fileName}</a>`;
-            }
-        } else {
-            content += m.text;
-        }
-        
-        content += `<span class="msg-time">${m.time || ''}</span>`;
-        d.innerHTML = content;
-        msgsDiv.appendChild(d);
-        msgsDiv.scrollTop = msgsDiv.scrollHeight;
-    }
-
-    // Запуск проверки уведомлений при старте
-    initNotifications().catch(console.error);
+        // Emoji
+        const emojis = "😀 😂 😊 😍 😎 🤔 🤨 😐 😶 🙄 😏 😥 😮 🤐 😴 😛 😒 😔 😕 😲 ☹️ 😖 😢 😭 😩 🤯 😰 😱 🥵 🥶 😳 😵 😠 😡 🤬 😇 🥳 🤡 💩".split(" ");
+        const ep = document.getElementById('emoji-list');
+        emojis.forEach(e => {
+            const div = document.createElement('div'); div.className = 'emoji-btn'; div.innerText = e;
+            div.onclick = () => { document.getElementById('mi').value += e; document.getElementById('mi').focus(); };
+            ep.appendChild(div);
+        });
     </script>
 </body>
 </html>
