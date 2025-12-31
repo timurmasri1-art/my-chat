@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Telegram Clone - Final</title>
+    <title>Telegram Clone - Voice Messages</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
         :root { --blue: #2481cc; --bg: #e7ebf0; }
@@ -29,11 +29,16 @@
         .msg.my { align-self: flex-end; background: #effdde; }
         .msg-time { font-size: 10px; color: #888; display: block; text-align: right; margin-top: 5px; }
 
-        .input-panel { padding: 15px; background: white; display: flex; gap: 10px; border-top: 1px solid #ddd; }
+        .input-panel { padding: 15px; background: white; display: flex; gap: 10px; border-top: 1px solid #ddd; align-items: center; }
+        .voice-btn { width: 50px !important; background: #50a33a !important; font-size: 20px; user-select: none; transition: 0.2s; }
+        .voice-btn.recording { background: #ff4d4d !important; animation: pulse 1s infinite; }
+        
+        #v-timer { color: #ff4d4d; font-weight: bold; font-size: 14px; display: none; min-width: 30px; }
+
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
 
         .emoji-panel { background: white; padding: 10px; overflow-y: auto; display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; height: 100vh; }
         .emoji-btn { font-size: 26px; cursor: pointer; padding: 8px; border-radius: 8px; text-align: center; }
-        .emoji-btn:hover { background: #f0f0f0; }
     </style>
 </head>
 <body>
@@ -73,6 +78,8 @@
             <div id="msgs"></div>
             <div class="input-panel">
                 <input type="text" id="mi" placeholder="Напишите сообщение..." onkeydown="if(event.key==='Enter') send()">
+                <span id="v-timer">20s</span>
+                <button id="v-btn" class="voice-btn">🎙</button>
                 <button onclick="send()" style="width:60px; margin:0">📤</button>
             </div>
         </div>
@@ -82,14 +89,102 @@
 
     <script>
         const socket = io();
-        let me = null, isReg = false, base64Ava = "", tempPass = "";
-        let allUsers = [], currentRoom = null;
-
-        // Используем sessionStorage для независимых вкладок
+        let me = null, allUsers = [], currentRoom = null;
         let activeChatters = new Set(JSON.parse(sessionStorage.getItem('tg_active_chats') || "[]"));
+
+        // Переменные для ГС
+        let mediaRecorder;
+        let audioChunks = [];
+        let stream = null;
+        let recordingTimeout; 
+        let timerInterval;
 
         const emojis = "😀 😁 😂 🤣 😃 😄 😅 😆 😉 😊 😋 😎 😍 😘 🥰 😗 😙 🥲 😚 ☺️ 🙂 🤗 🤩 🤔 🫡 🤨 😐 😑 😶 🫥 🙄 😏 😣 😥 😮 🤐 😯 😪 😫 🥱 😴 😌 😛 😜 😝 🤤 😒 😓 😔 😕 🫤 🙃 🫠 🤑 😲 ☹️ 🙁 😖 😞 😟 😤 😢 😭 😦 😧 😨 😩 🤯 😬 😰 😱 🥵 🥶 😳 🤪 😵 😵‍💫 🥴 😠 😡 🤬 😇 🥳 🥸 🥺 🥹 🤠 🤡 🤥 🤫 🤭 🫢 🫣 🧐 🤓 😈 👿 👹 👺 💀 ☠️ 👻 👽 👾 🤖 💩".split(/\s+/);
 
+        const vBtn = document.getElementById('v-btn');
+        const vTimer = document.getElementById('v-timer');
+
+        // --- ЛОГИКА ГОЛОСОВЫХ ---
+        async function initMedia() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                
+                mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+                
+                mediaRecorder.onstop = async () => {
+                    stopTimerDisplay();
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/ogg; codecs=opus' });
+                    if (audioBlob.size < 1000) return; // Не отправляем слишком короткие
+
+                    const reader = new FileReader();
+                    reader.readAsDataURL(audioBlob);
+                    reader.onloadend = () => {
+                        const base64Audio = reader.result;
+                        const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        socket.emit('message', { 
+                            room: currentRoom, 
+                            voice: base64Audio, 
+                            user: me.nickname, 
+                            sid: me.username, 
+                            time 
+                        });
+                    };
+                    audioChunks = [];
+                };
+                return true;
+            } catch (err) {
+                alert("Микрофон заблокирован или недоступен");
+                return false;
+            }
+        }
+
+        function startTimerDisplay() {
+            let timeLeft = 20;
+            vTimer.innerText = timeLeft + "s";
+            vTimer.style.display = "inline";
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                vTimer.innerText = timeLeft + "s";
+                if (timeLeft <= 0) stopTimerDisplay();
+            }, 1000);
+        }
+
+        function stopTimerDisplay() {
+            clearInterval(timerInterval);
+            vTimer.style.display = "none";
+        }
+
+        vBtn.onmousedown = async (e) => {
+            if (!currentRoom) return;
+            if (!stream) {
+                const allowed = await initMedia();
+                if (!allowed) return;
+            }
+            if (mediaRecorder && mediaRecorder.state === "inactive") {
+                vBtn.classList.add('recording');
+                audioChunks = [];
+                mediaRecorder.start();
+                startTimerDisplay();
+
+                // Авто-стоп через 20 секунд
+                recordingTimeout = setTimeout(() => {
+                    if (mediaRecorder.state === "recording") vBtn.onmouseup();
+                }, 20000);
+            }
+        };
+
+        vBtn.onmouseup = () => {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                vBtn.classList.remove('recording');
+                clearTimeout(recordingTimeout);
+                mediaRecorder.stop();
+            }
+        };
+
+        vBtn.onmouseleave = vBtn.onmouseup;
+
+        // --- ОСТАЛЬНАЯ ЛОГИКА ---
         function saveToDisk() {
             sessionStorage.setItem('tg_active_chats', JSON.stringify(Array.from(activeChatters)));
         }
@@ -99,11 +194,7 @@
             const div = document.createElement('div');
             div.className = 'emoji-btn';
             div.innerText = e;
-            div.onclick = () => { 
-                const mi = document.getElementById('mi');
-                mi.value += e + " "; 
-                mi.focus(); 
-            };
+            div.onclick = () => { document.getElementById('mi').value += e + " "; document.getElementById('mi').focus(); };
             ep.appendChild(div);
         });
 
@@ -125,13 +216,12 @@
         function doAuth() {
             const u = document.getElementById('au').value, p = document.getElementById('ap').value;
             if(!u || !p) return alert("Заполни поля!");
-            tempPass = p;
             socket.emit('auth_request', { username: u, password: p, isRegister: isReg });
         }
 
         socket.on('auth_success', (res) => {
             if(res.needProfile) {
-                me = { username: res.username, password: tempPass };
+                me = { username: res.username };
                 document.getElementById('auth-ui').style.display = 'none';
                 document.getElementById('prof-ui').style.display = 'flex';
             } else {
@@ -141,17 +231,15 @@
             }
         });
 
-        document.getElementById('p_ava').onchange = (e) => {
-            const r = new FileReader();
-            r.onload = () => base64Ava = r.result;
-            r.readAsDataURL(e.target.files[0]);
-        };
-
         function doProf() {
             me.nickname = document.getElementById('p_nick').value;
             me.sysName = document.getElementById('p_sys').value;
-            me.avatar = base64Ava;
-            socket.emit('save_profile', me);
+            const file = document.getElementById('p_ava').files[0];
+            if (file) {
+                const r = new FileReader();
+                r.onload = () => { me.avatar = r.result; socket.emit('save_profile', me); };
+                r.readAsDataURL(file);
+            } else { socket.emit('save_profile', me); }
         }
 
         socket.on('profile_ready', (u) => { me = u; sessionStorage.setItem('tg_user', JSON.stringify(me)); startApp(); });
@@ -167,18 +255,15 @@
             const query = document.getElementById('user-search').value.toLowerCase().trim();
             const list = document.getElementById('user-list');
             list.innerHTML = '';
-            if(!me) return;
-
             allUsers.forEach(u => {
-                if(u.username === me.username) return;
+                if(me && u.username === me.username) return;
                 const isSearching = query !== "" && (u.nickname.toLowerCase().includes(query) || u.sysName.toLowerCase().includes(query));
                 const isChatActive = activeChatters.has(u.username);
-
                 if(isSearching || isChatActive) {
                     const div = document.createElement('div');
                     div.className = `user-item ${isChatActive ? 'active-chat' : ''}`;
                     div.onclick = () => selectChat(u);
-                    div.innerHTML = `<img src="${u.avatar || ''}" class="ava"> <div><b>${u.nickname}</b><br><small>${isChatActive ? '💬 Активный чат' : '@'+u.sysName}</small></div>`;
+                    div.innerHTML = `<img src="${u.avatar || ''}" class="ava"> <div><b>${u.nickname}</b><br><small>@${u.sysName}</small></div>`;
                     list.appendChild(div);
                 }
             });
@@ -194,26 +279,6 @@
             updateSidebar();
         }
 
-        document.getElementById('user-search').oninput = updateSidebar;
-
-        socket.on('init_data', (d) => {
-            if (!d) return;
-            allUsers = d.users || [];
-            if (d.messages && Array.isArray(d.messages) && me) {
-                d.messages.forEach(m => {
-                    const parts = m.room.split('_');
-                    if (parts.includes(me.username)) {
-                        const other = parts.find(id => id !== me.username);
-                        if (other) activeChatters.add(other);
-                    }
-                });
-                saveToDisk();
-            }
-            updateSidebar();
-        });
-
-        socket.on('update_users', (u) => { allUsers = u; updateSidebar(); });
-
         function send() {
             const i = document.getElementById('mi');
             if(!i.value || !currentRoom) return;
@@ -222,17 +287,10 @@
             i.value = '';
         }
 
+        socket.on('init_data', (d) => { allUsers = d.users || []; updateSidebar(); });
+        socket.on('update_users', (u) => { allUsers = u; updateSidebar(); });
+
         socket.on('message', (m) => {
-            if(!me) return;
-            const parts = m.room.split('_');
-            if(parts.includes(me.username)) {
-                const other = parts.find(id => id !== me.username);
-                if(other) {
-                    activeChatters.add(other);
-                    saveToDisk();
-                    updateSidebar();
-                }
-            }
             if(m.room === currentRoom) renderMsg(m);
         });
 
@@ -242,7 +300,16 @@
             const msgsDiv = document.getElementById('msgs');
             const d = document.createElement('div');
             d.className = `msg ${m.sid === me.username ? 'my' : ''}`;
-            d.innerHTML = `<b>${m.user}</b><br>${m.text}<span class="msg-time">${m.time || ''}</span>`;
+            
+            let content = `<b>${m.user}</b><br>`;
+            if (m.voice) {
+                content += `<audio controls src="${m.voice}" style="width: 200px; height: 35px;"></audio>`;
+            } else {
+                content += m.text;
+            }
+            content += `<span class="msg-time">${m.time || ''}</span>`;
+            
+            d.innerHTML = content;
             msgsDiv.appendChild(d);
             msgsDiv.scrollTop = msgsDiv.scrollHeight;
         }
